@@ -1,41 +1,19 @@
 """
 wallpaper.py - 바탕화면 이미지 생성 및 설정 모듈
-- 검은 배경화면에 노란 메모지 이미지 렌더링
-- Windows 바탕화면 즉시 적용 및 이전 생성 이미지 삭제
-- 메모 데이터(JSON) 영구 저장 및 관리
+- Pillow(PIL) 기반 메모 합성 (사용자 지정 폰트 및 Unsplash 배경 텍스처 지원)
+- Windows 바탕화면 실시간 반영 및 이전 임시 파일 자동 정리
+- 메모 데이터(JSON) 영구 저장 (기본 환영 메모 없이 빈 상태로 시작)
 """
 import os
+import glob
 import json
 import time
-import glob
-import struct
 import ctypes
-from ctypes import wintypes
+from PIL import Image, ImageDraw, ImageFont, ImageStat
 
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memos.json")
 
-try:
-    from PIL import Image, ImageDraw, ImageFont
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
-
-class BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [
-        ("biSize", wintypes.DWORD),
-        ("biWidth", wintypes.LONG),
-        ("biHeight", wintypes.LONG),
-        ("biPlanes", wintypes.WORD),
-        ("biBitCount", wintypes.WORD),
-        ("biCompression", wintypes.DWORD),
-        ("biSizeImage", wintypes.DWORD),
-        ("biXPelsPerMeter", wintypes.LONG),
-        ("biYPelsPerMeter", wintypes.LONG),
-        ("biClrUsed", wintypes.DWORD),
-        ("biClrImportant", wintypes.DWORD),
-    ]
-
-def get_screen_size():
+def get_screen_size() -> tuple[int, int]:
     u32 = ctypes.windll.user32
     try:
         u32.SetProcessDPIAware()
@@ -44,26 +22,25 @@ def get_screen_size():
     w, h = u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)
     return (w if w > 0 else 1920, h if h > 0 else 1080)
 
-def load_memos():
+def load_memos() -> list[dict]:
+    """저장된 메모 목록 로드 (환영 메모 없이 빈 리스트 반환)"""
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
         except Exception:
             return []
-    return [{
-        "id": 1,
-        "text": "📌 환영합니다!\n새로운 메모를 추가하고\n원하는 위치로 드래그해보세요.",
-        "x": 120, "y": 120, "width": 260, "height": 180
-    }]
+    return []
 
-def save_memos(memos):
+def save_memos(memos: list[dict]) -> None:
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(memos, f, ensure_ascii=False, indent=2)
 
-def clean_old_wallpapers(current_file):
+def clean_old_wallpapers(current_file: str) -> None:
     base_dir = os.path.dirname(os.path.abspath(current_file))
-    patterns = [os.path.join(base_dir, "wallpaper_memo_*.bmp"), os.path.join(base_dir, "wallpaper_memo_*.png")]
+    patterns = [os.path.join(base_dir, "wallpaper_memo_*.png"), os.path.join(base_dir, "wallpaper_memo_*.bmp")]
     for p in patterns:
         for f in glob.glob(p):
             if os.path.abspath(f) != os.path.abspath(current_file):
@@ -72,73 +49,68 @@ def clean_old_wallpapers(current_file):
                 except Exception:
                     pass
 
-def render_wallpaper_pil(memos, width, height, out_path):
+def create_rounded_mask(width: int, height: int, radius: int = 14) -> Image.Image:
+    mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle([0, 0, width, height], radius=radius, fill=255)
+    return mask
+
+def render_wallpaper_pil(memos: list[dict], width: int, height: int, out_path: str) -> None:
     img = Image.new("RGB", (width, height), (18, 18, 18))
     draw = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.truetype("malgun.ttf", 16)
-    except Exception:
-        font = ImageFont.load_default()
+
     for m in memos:
         x, y, w, h = int(m["x"]), int(m["y"]), int(m["width"]), int(m["height"])
-        draw.rounded_rectangle([x, y, x + w, y + h], radius=12, fill=(255, 238, 115), outline=(225, 205, 80), width=2)
-        lines = m["text"].split("\n")
+        if w <= 10 or h <= 10:
+            continue
+
+        bg_path = m.get("bg_image_path")
+        is_dark = False
+        if bg_path and os.path.exists(bg_path):
+            try:
+                bg_memo = Image.open(bg_path).convert("RGB").resize((w, h), Image.Resampling.LANCZOS)
+                mask = create_rounded_mask(w, h, radius=14)
+                img.paste(bg_memo, (x, y), mask)
+                draw.rounded_rectangle([x, y, x + w, y + h], radius=14, outline=(220, 220, 220), width=2)
+                stat = ImageStat.Stat(bg_memo.convert("L"))
+                is_dark = stat.mean[0] < 128
+            except Exception:
+                draw.rounded_rectangle([x, y, x + w, y + h], radius=14, fill=(255, 238, 115), outline=(225, 205, 80), width=2)
+        else:
+            draw.rounded_rectangle([x, y, x + w, y + h], radius=14, fill=(255, 238, 115), outline=(225, 205, 80), width=2)
+
+        font_path = m.get("font_path")
+        font_size = 18
+        font = None
+        if font_path and os.path.exists(font_path):
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+            except Exception:
+                pass
+        if font is None:
+            try:
+                font = ImageFont.truetype("malgun.ttf", 16)
+            except Exception:
+                font = ImageFont.load_default()
+
+        text_color = (245, 245, 245) if is_dark else (25, 25, 25)
+        shadow_color = (15, 15, 15) if is_dark else (255, 255, 255)
+        lines = m.get("text", "").split("\n")
         cur_y = y + 14
         for line in lines:
-            draw.text((x + 14, cur_y), line, fill=(25, 25, 25), font=font)
-            cur_y += 22
-            if cur_y > y + h - 20:
+            draw.text((x + 15, cur_y + 1), line, fill=shadow_color, font=font)
+            draw.text((x + 14, cur_y), line, fill=text_color, font=font)
+            cur_y += 24
+            if cur_y > y + h - 22:
                 break
-    img.save(out_path)
 
-def render_wallpaper_gdi(memos, width, height, out_path):
-    u32, g32 = ctypes.windll.user32, ctypes.windll.gdi32
-    hdc_screen = u32.GetDC(0)
-    hdc = g32.CreateCompatibleDC(hdc_screen)
-    bmi = BITMAPINFOHEADER()
-    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-    bmi.biWidth, bmi.biHeight, bmi.biPlanes, bmi.biBitCount = width, -height, 1, 32
-    p_bits = ctypes.c_void_p()
-    h_bmp = g32.CreateDIBSection(hdc, ctypes.byref(bmi), 0, ctypes.byref(p_bits), None, 0)
-    old_bmp = g32.SelectObject(hdc, h_bmp)
-    g32.PatBlt(hdc, 0, 0, width, height, 0x00000042)
-    for m in memos:
-        x, y, w, h = int(m["x"]), int(m["y"]), int(m["width"]), int(m["height"])
-        brush = g32.CreateSolidBrush(0x73EEFF)
-        pen = g32.CreatePen(0, 2, 0x50CDE1)
-        o_br, o_pn = g32.SelectObject(hdc, brush), g32.SelectObject(hdc, pen)
-        g32.RoundRect(hdc, x, y, x + w, y + h, 14, 14)
-        g32.SelectObject(hdc, o_br)
-        g32.SelectObject(hdc, o_pn)
-        g32.DeleteObject(brush)
-        g32.DeleteObject(pen)
-        font = g32.CreateFontW(18, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 4, 0, "맑은 고딕")
-        o_fn = g32.SelectObject(hdc, font)
-        g32.SetTextColor(hdc, 0x191919)
-        g32.SetBkMode(hdc, 1)
-        rect = wintypes.RECT(x + 14, y + 14, x + w - 14, y + h - 14)
-        u32.DrawTextW(hdc, m["text"], -1, ctypes.byref(rect), 0x0010 | 0x0000)
-        g32.SelectObject(hdc, o_fn)
-        g32.DeleteObject(font)
-    size = width * height * 4
-    with open(out_path, "wb") as f:
-        f.write(b"BM" + struct.pack("<IHHI", 54 + size, 0, 0, 54))
-        f.write(bytes(bmi))
-        f.write(ctypes.string_at(p_bits.value, size))
-    g32.SelectObject(hdc, old_bmp)
-    g32.DeleteObject(h_bmp)
-    g32.DeleteDC(hdc)
-    u32.ReleaseDC(0, hdc_screen)
+    img.save(out_path, format="PNG")
 
-def update_wallpaper(memos):
+def update_wallpaper(memos: list[dict]) -> str:
     w, h = get_screen_size()
-    ext = "png" if HAS_PIL else "bmp"
     dir_path = os.path.dirname(os.path.abspath(__file__))
-    new_file = os.path.join(dir_path, f"wallpaper_memo_{int(time.time() * 1000)}.{ext}")
-    if HAS_PIL:
-        render_wallpaper_pil(memos, w, h, new_file)
-    else:
-        render_wallpaper_gdi(memos, w, h, new_file)
+    new_file = os.path.join(dir_path, f"wallpaper_memo_{int(time.time() * 1000)}.png")
+    render_wallpaper_pil(memos, w, h, new_file)
     ctypes.windll.user32.SystemParametersInfoW(20, 0, new_file, 3)
     clean_old_wallpapers(new_file)
     return new_file
