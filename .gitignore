@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Python cache & virtualenv
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec
+
+# Cache directories
+cache/
+assets/cache/
+
+# Generated wallpaper files
+wallpaper_memo_*.bmp
+wallpaper_memo_*.png
