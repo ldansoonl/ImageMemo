@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Environment variables
 .env
 
@@ -16,3 +17,7 @@ assets/cache/
 # Generated wallpaper files
 wallpaper_memo_*.bmp
 wallpaper_memo_*.png
+=======
+.venv
+__pycache__
+>>>>>>> origin/main
